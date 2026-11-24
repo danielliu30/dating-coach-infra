@@ -24,6 +24,10 @@
 # PREV_SPLIT, catching slow-burn regressions the wave bakes missed.
 #
 # Injectable for tests: GCLOUD, SLEEP, BAKE_CHECK, PROBE_SUITE, LOG_LOCATION.
+# Bake-gate knobs, env-overridable: WAVE_WARMUP_SECONDS (grace for Cloud
+# Logging ingestion lag before the gate reads — a fresh revision can look
+# empty for its first minutes), WAVE_RETRIES and WAVE_RETRY_DELAY (extra
+# no-data polls). Defaults below.
 set -u
 
 PROJECT="" REGION="" SERVICE="" NEW_REV="" PREV_REV="" PREV_SPLIT=""
@@ -36,6 +40,9 @@ SLEEP=${SLEEP:-sleep}
 BAKE_CHECK=${BAKE_CHECK:-"$(cd "$(dirname "$0")" && pwd)/deploy-bake-check.sh"}
 PROBE_SUITE=${PROBE_SUITE:-"$(cd "$(dirname "$0")" && pwd)/deploy-probe-suite.sh"}
 LOG_LOCATION=${LOG_LOCATION:-global}
+WAVE_WARMUP_SECONDS=${WAVE_WARMUP_SECONDS:-60}
+WAVE_RETRIES=${WAVE_RETRIES:-3}
+WAVE_RETRY_DELAY=${WAVE_RETRY_DELAY:-60}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -106,7 +113,9 @@ for step in $PLAN; do
         --service "$SERVICE" --revision "$NEW_REV" \
         --window-minutes "$bake" --min-requests "$MIN_REQUESTS" \
         --max-error-rate "$MAX_ERROR_RATE" \
-        --slow-threshold-ms "$SLOW_MS" --max-slow-rate "$MAX_SLOW_RATE"; then
+        --slow-threshold-ms "$SLOW_MS" --max-slow-rate "$MAX_SLOW_RATE" \
+        --warmup-seconds "$WAVE_WARMUP_SECONDS" \
+        --retries "$WAVE_RETRIES" --retry-delay "$WAVE_RETRY_DELAY"; then
     echo "   wave ${pct}% bake passed"
   else
     echo "   wave ${pct}% bake FAILED"
@@ -124,7 +133,9 @@ if [ "$WATCH_MINUTES" -gt 0 ]; then
         --service "$SERVICE" --revision "$NEW_REV" \
         --window-minutes "$WATCH_MINUTES" --min-requests "$MIN_REQUESTS" \
         --max-error-rate "$MAX_ERROR_RATE" \
-        --slow-threshold-ms "$SLOW_MS" --max-slow-rate "$MAX_SLOW_RATE"; then
+        --slow-threshold-ms "$SLOW_MS" --max-slow-rate "$MAX_SLOW_RATE" \
+        --warmup-seconds "$WAVE_WARMUP_SECONDS" \
+        --retries "$WAVE_RETRIES" --retry-delay "$WAVE_RETRY_DELAY"; then
     echo "   watch passed: ${WATCH_MINUTES}m at 100% within thresholds"
   else
     echo "   post-promotion watch FAILED"
