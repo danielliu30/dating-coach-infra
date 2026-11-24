@@ -133,7 +133,9 @@ if [ "$WATCH_MINUTES" -gt 0 ]; then
         --service "$SERVICE" --revision "$NEW_REV" \
         --window-minutes "$WATCH_MINUTES" --min-requests "$MIN_REQUESTS" \
         --max-error-rate "$MAX_ERROR_RATE" \
-        --slow-threshold-ms "$SLOW_MS" --max-slow-rate "$MAX_SLOW_RATE"; then
+        --slow-threshold-ms "$SLOW_MS" --max-slow-rate "$MAX_SLOW_RATE" \
+        --warmup-seconds "$WAVE_WARMUP_SECONDS" \
+        --retries "$WAVE_RETRIES" --retry-delay "$WAVE_RETRY_DELAY"; then
     echo "   watch passed: ${WATCH_MINUTES}m at 100% within thresholds"
   else
     echo "   post-promotion watch FAILED"
