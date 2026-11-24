@@ -114,6 +114,17 @@ Then merge anything to the app repo's `main` (or dispatch a deploy workflow by
 hand with `app_sha`). The first run creates every service, the push
 subscriptions and the scheduler jobs.
 
+Optionally wire up paging: `PROJECT_ID=<project> ALERT_EMAIL=you@example.com
+bash scripts/monitoring-alerts.sh` creates (or reuses) one email notification
+channel and upserts Cloud Monitoring alert policies — a service-wide 5xx ratio
+on `dating-coach-api`/`dating-coach-web`, p95 latency on the API, failed
+`dating-coach-migrate` executions, backlog age on each `<topic>.worker-push`
+subscription, and any message parked on a `<topic>.dlq-hold` subscription. The
+script is idempotent: re-run it after changing `ALERT_ERROR_RATE_PCT`,
+`ALERT_P95_MS`, `ALERT_UNACKED_AGE_S` or `ALERT_DLQ_MESSAGES` and it updates the
+existing policies in place. The bake checks in `deploy-bake-check.sh` already
+gate each rollout wave; these alerts cover the time between deploys.
+
 ## Deploys and rollback
 
 Merges to the app repo's main fire `repository_dispatch(app-merge)` into this
