@@ -27,6 +27,7 @@ EOF
 cat > "$FIX/bake-check" <<'EOF'
 #!/usr/bin/env bash
 # Returns the nth value of $BAKE_RESULTS on the nth invocation.
+echo "$*" >> "$FIXTURE_DIR/bake-args"
 f="$FIXTURE_DIR/bake-calls"; n=0
 [ -f "$f" ] && n=$(cat "$f")
 echo $((n+1)) > "$f"
@@ -41,7 +42,7 @@ pass=0; fail=0
 export FIXTURE_DIR="$FIX"
 run() { # run <name> <want-exit> <bake_results> [extra args...]
   local name=$1 want=$2 results=$3; shift 3
-  rm -f "$FIX/gcloud-calls" "$FIX/bake-calls" "$FIX/gcloud-fail" "$FIX/probe-calls" "$FIX/probe-fail"
+  rm -f "$FIX/gcloud-calls" "$FIX/bake-calls" "$FIX/bake-args" "$FIX/gcloud-fail" "$FIX/probe-calls" "$FIX/probe-fail"
   GCLOUD="$FIX/gcloud" SLEEP="$FIX/true" BAKE_CHECK="$FIX/bake-check" \
     PROBE_SUITE="$FIX/probe" BAKE_RESULTS="$results" \
     bash "$WAVES" --project p --region r --service svc \
@@ -68,6 +69,26 @@ calls | grep -q -- '--to-revisions svc-0002=10,svc-0001=90' \
 calls | grep -q -- '--to-revisions svc-0002=50,svc-0001=50' \
   && { pass=$((pass+1)); echo 'ok    wave 50 split correct'; } \
   || { fail=$((fail+1)); echo 'FAIL  wave 50 split correct'; }
+
+# bake gate gets the log-ingestion warmup/retry knobs by default
+grep -q -- '--warmup-seconds 60' "$FIX/bake-args" \
+  && { pass=$((pass+1)); echo 'ok    bake warmup passed'; } \
+  || { fail=$((fail+1)); echo 'FAIL  bake warmup passed'; }
+grep -q -- '--retries 3' "$FIX/bake-args" \
+  && { pass=$((pass+1)); echo 'ok    bake retries passed'; } \
+  || { fail=$((fail+1)); echo 'FAIL  bake retries passed'; }
+
+# wave knobs are env-overridable
+rm -f "$FIX/bake-args"
+WAVE_WARMUP_SECONDS=5 WAVE_RETRIES=9 WAVE_RETRY_DELAY=7 \
+  GCLOUD="$FIX/gcloud" SLEEP="$FIX/true" BAKE_CHECK="$FIX/bake-check" \
+  BAKE_RESULTS="0" bash "$WAVES" --project p --region r --service svc \
+  --new-revision svc-0002 --prev-revision svc-0001 --plan "10:1 100:0" >/dev/null 2>&1
+grep -q -- '--warmup-seconds 5' "$FIX/bake-args" \
+  && grep -q -- '--retries 9' "$FIX/bake-args" \
+  && grep -q -- '--retry-delay 7' "$FIX/bake-args" \
+  && { pass=$((pass+1)); echo 'ok    wave knobs env-overridable'; } \
+  || { fail=$((fail+1)); echo 'FAIL  wave knobs env-overridable'; }
 
 # bake failure on wave 2: stop, single rollback to prev split, never to-latest
 run 'bake fail rolls back'         1 "0 1" --plan "10:1 25:1 50:1 100:0"
