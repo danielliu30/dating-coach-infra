@@ -103,6 +103,32 @@ Config-only changes (new secret version, flipped variable) need a fresh
 revision to take effect — dispatch `image_tag` with the current tag to roll
 new revisions on the same image.
 
+## Alerting between deploys
+
+`scripts/monitoring-alerts.sh` ensures Cloud Monitoring alerting exists and is
+idempotent — re-run it any time (e.g. after `gcp-bootstrap.sh` or when
+thresholds change):
+
+```bash
+PROJECT_ID=<project> ALERT_EMAIL=oncall@example.com bash scripts/monitoring-alerts.sh
+```
+
+It creates/reuses one email notification channel and upserts alert policies by
+display name: service-wide 5xx ratio on `dating-coach-api` and
+`dating-coach-web`, p95 latency on `dating-coach-api`, failed executions of the
+`dating-coach-migrate` job, oldest unacked message age on each
+`<topic>.worker-push` subscription, and any undelivered messages on each
+`<topic>.dlq-hold` subscription.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `ALERT_EMAIL` | (required) | email channel target |
+| `ALERT_CHANNEL_NAME` | `dating-coach-alerts` | channel display name (reused if found) |
+| `ALERT_ERROR_RATE_PCT` | `1` | 5xx request-count ratio percent on api + web |
+| `ALERT_P95_MS` | `2000` | p95 request latency ms on api |
+| `ALERT_UNACKED_AGE_S` | `600` | oldest unacked message age on `*.worker-push` |
+| `ALERT_DLQ_MESSAGES` | `0` | undelivered messages on `*.dlq-hold` that fires (0 = any) |
+
 ## One-time setup
 
 - `scripts/gcp-bootstrap.sh` — GCP service accounts, WIF trust **scoped to this
@@ -130,6 +156,7 @@ bash scripts/test-release-window.sh
 bash scripts/test-deploy-bake-check.sh
 bash scripts/test-deploy-waves.sh   # gcloud/sleep/check are stubbed
 bash scripts/test-check-e2e-drift.sh   # fixture yaml pairs, no fetch
+bash scripts/test-monitoring-alerts.sh  # gcloud is stubbed
 ```
 
 Runs in CI (`ci.yml`) on every PR.
