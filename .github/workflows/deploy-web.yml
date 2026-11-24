@@ -30,7 +30,7 @@ env:
   APP_REPO: danielliu30/dating-coach
   APP_SHA: ${{ github.event.client_payload.sha || inputs.app_sha }}
   APP_BEFORE: ${{ github.event.client_payload.before }}
-  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
   DEPLOY_TAG: ${{ inputs.image_tag || github.event.client_payload.sha || inputs.app_sha }}
   WEB_API_URL: ${{ vars.API_PUBLIC_URL }}
   GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
@@ -150,7 +150,7 @@ jobs:
       PROJECT: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION || 'us-central1' }}
       WEB_SA: ${{ vars.GCP_WEB_SERVICE_ACCOUNT }}
-      IMAGES: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+      IMAGES: docker.io/${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
       WAVE_PLAN: ${{ vars.DEPLOY_WAVE_PLAN || '10:15 25:30 50:45 100:0' }}
       BAKE_MIN_REQUESTS: ${{ vars.BAKE_MIN_REQUESTS || '20' }}
       BAKE_MAX_ERROR_RATE: ${{ vars.BAKE_MAX_ERROR_RATE || '1' }}
