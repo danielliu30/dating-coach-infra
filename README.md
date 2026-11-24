@@ -67,6 +67,28 @@ Each pipeline only owns its piece:
 `DEPLOY_WINDOW_START_UTC`/`_END_UTC` (UTC). Restores (`image_tag` dispatch)
 skip the window and go straight to 100% — rollback should not wait.
 
+## Drift reconciler
+
+A lost `repository_dispatch` silently skips a deploy (app repo issue #9).
+`.github/workflows/reconcile.yml` runs `scripts/reconcile-drift.sh` hourly
+(`cron: '7 * * * *'`, plus `workflow_dispatch`) on main when
+`DEPLOY_TARGET=cloud-run`. It describes each Cloud Run service
+(`dating-coach-api`, `dating-coach-web`, `dating-coach-ml`,
+`dating-coach-worker`), compares the deployed image tag to the app repo's
+main tip, and prints a drift table:
+
+- `IN-SYNC` — deployed tag == main tip
+- `PENDING` — service not deployed yet (not drift)
+- `GRACE` — behind, but the tip is younger than `RECONCILE_GRACE_MINUTES`
+  (default 60) so a dispatch may still be in flight
+- `DRIFTED` — behind and the tip is older than the grace window, or the
+  tip's commit time cannot be established (fail closed) — the run exits 1
+
+The job runs in the `production` environment under the same WIF trust as the
+deploy pipelines; after adding/changing the workflow, re-run
+`scripts/gcp-bootstrap.sh` once so the provider's `workflow_ref` condition
+includes `reconcile.yml`.
+
 ## Manual operations
 
 ```bash
