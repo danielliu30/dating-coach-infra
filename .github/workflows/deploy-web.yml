@@ -134,6 +134,10 @@ jobs:
     if: >-
       ${{ !cancelled() && vars.DEPLOY_TARGET == 'cloud-run'
       && (inputs.image_tag != '' || (needs.changed.outputs.deploy == 'true' && needs.build-push.result == 'success')) }}
+    # Repo-wide group shared with deploy-backend.yml: api and web never roll public traffic at once.
+    concurrency:
+      group: public-rollout
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 300
     permissions:
