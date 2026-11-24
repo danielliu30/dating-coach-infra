@@ -1,0 +1,25 @@
+name: Drift — app e2e mirror
+
+# gate-e2e.yml mirrors the app repo's e2e.yml; they can drift silently
+# (issue #10). Runs daily so a divergence alerts even when nothing ships,
+# and on any PR touching the mirror or this check.
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/gate-e2e.yml
+      - .github/workflows/gate-drift.yml
+      - scripts/check-e2e-drift.sh
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare gate-e2e.yml against the app e2e.yml
+        # exit 0 in sync, 1 drift, 2 fetch/parse failure — all non-zero fail
+        # the job; an unverifiable mirror must alert, not pass silently.
+        run: bash scripts/check-e2e-drift.sh

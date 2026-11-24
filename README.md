@@ -16,6 +16,8 @@ infra repo: all four deploy-*.yml wake on repository_dispatch(app-merge)
   -> changed job: git diff before..sha on the app checkout -> skip if the
      service's paths were untouched
   -> e2e gate: gate-e2e.yml runs the app repo's e2e suite at that SHA
+     (gate-drift.yml runs scripts/check-e2e-drift.sh daily and alerts when
+     the app's e2e.yml and this mirror diverge)
   -> build-push: checkout app @ sha, docker compose build/push :<sha> (+ :latest
      only when the SHA is still the app repo's main tip)
   -> deploy (DEPLOY_TARGET=cloud-run):
@@ -99,6 +101,7 @@ new revisions on the same image.
 bash scripts/test-release-window.sh
 bash scripts/test-deploy-bake-check.sh
 bash scripts/test-deploy-waves.sh   # gcloud/sleep/check are stubbed
+bash scripts/test-check-e2e-drift.sh   # fixture yaml pairs, no fetch
 ```
 
 Runs in CI (`ci.yml`) on every PR.
