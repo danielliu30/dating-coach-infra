@@ -9,7 +9,9 @@ publishing, GCP provisioning and every change to live traffic.
 - **Waves only, forward only.** Public traffic moves through the
   `DEPLOY_WAVE_PLAN` staircase (alpha tag -> percent waves -> 100%). No step
   skips ahead, no ad-hoc `update-traffic` in workflow code outside
-  deploy-waves.sh and the rollback path.
+  deploy-waves.sh and the rollback path. Public rollouts are serialized:
+  the api and web `deploy` jobs share the repo-wide `public-rollout`
+  concurrency group, so the two services can never be mid-rollout at once.
 - **Every wave is verified twice.** The probe suite (active contract checks
   on the candidate's tag URL) and the bake check (coverage + 5xx + slow
   ratio on the revision, 5xx ceiling service-wide) both gate each promotion.
