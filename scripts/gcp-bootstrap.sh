@@ -75,7 +75,7 @@ fi
 g iam workload-identity-pools providers "$provider_action" github --location global --workload-identity-pool github \
   --issuer-uri "https://token.actions.githubusercontent.com" \
   --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository" \
-  --attribute-condition "assertion.repository=='$GITHUB_REPO' && assertion.ref=='refs/heads/main' && assertion.environment=='production' && assertion.workflow_ref in ['$GITHUB_REPO/.github/workflows/deploy-db.yml@refs/heads/main', '$GITHUB_REPO/.github/workflows/deploy-backend.yml@refs/heads/main', '$GITHUB_REPO/.github/workflows/deploy-ml.yml@refs/heads/main', '$GITHUB_REPO/.github/workflows/deploy-web.yml@refs/heads/main']"
+  --attribute-condition "assertion.repository=='$GITHUB_REPO' && assertion.ref=='refs/heads/main' && assertion.environment=='production' && assertion.workflow_ref in ['$GITHUB_REPO/.github/workflows/deploy-db.yml@refs/heads/main', '$GITHUB_REPO/.github/workflows/deploy-backend.yml@refs/heads/main', '$GITHUB_REPO/.github/workflows/deploy-ml.yml@refs/heads/main', '$GITHUB_REPO/.github/workflows/deploy-web.yml@refs/heads/main', '$GITHUB_REPO/.github/workflows/reconcile.yml@refs/heads/main']"
 g iam service-accounts add-iam-policy-binding "$DEPLOY_SA" --role roles/iam.workloadIdentityUser \
   --member "principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository/$GITHUB_REPO" >/dev/null
 
