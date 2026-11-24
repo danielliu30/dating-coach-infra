@@ -23,16 +23,6 @@ http.createServer((req, res) => {
 EOF
 node "$FIX/server.js" &
 SRV_PID=$!
-wait_for() { # wait_for <port> — the fixture servers take a moment to bind on CI
-  local i
-  for i in $(seq 1 30); do
-    curl -fsS -o /dev/null "http://127.0.0.1:$1/healthz" 2>/dev/null && return 0
-    sleep 0.5
-  done
-  echo "fixture server on :$1 never came up" >&2
-  exit 1
-}
-wait_for 8189
 
 cat > "$FIX/suite.conf" <<'EOF'
 health|GET|/healthz|200|
@@ -47,6 +37,15 @@ cat > "$FIX/flaky.conf" <<'EOF'
 flaky|GET|/flaky|200|
 EOF
 
+wait_ready() { # poll until the fixture server accepts connections
+  local url=$1 i
+  for i in $(seq 1 40); do
+    curl -s -o /dev/null --max-time 1 "$url" && return 0
+    sleep 0.5
+  done
+  echo "fixture server at $url never became ready" >&2; return 1
+}
+
 pass=0; fail=0
 t() { local name=$1 want=$2; shift 2
   "$@" >/dev/null 2>&1; local got=$?
@@ -54,6 +53,8 @@ t() { local name=$1 want=$2; shift 2
   else fail=$((fail+1)); printf 'FAIL  %s (want %s, got %s)\n' "$name" "$want" "$got"; fi
 }
 P() { bash "$SUITE" --base-url http://127.0.0.1:8189 "$@"; }
+
+wait_ready http://127.0.0.1:8189/healthz
 
 t 'suite passes'                  0 P --config "$FIX/suite.conf"
 t 'fails on wrong status'         1 P --config "$FIX/failing.conf"
@@ -69,7 +70,7 @@ http.createServer((req, res) => { res.writeHead(200).end('{}'); }).listen(8190, 
 EOF
 node "$FIX/server2.js" &
 SRV_PID2=$!
-wait_for 8190
+wait_ready http://127.0.0.1:8190/
 # me probe: 401 on base (passes its want), 200 on server2 -> divergence fails
 t 'compare divergence fails'      1 P --config "$FIX/suite.conf" --compare http://127.0.0.1:8190
 kill "$SRV_PID2" 2>/dev/null
