@@ -1,0 +1,179 @@
+name: Deploy — DB migrations
+
+# Migration path of the release pipeline. Triggered by the app repo's
+# notify-infra workflow (repository_dispatch, type app-merge) on every merge
+# to main — the `changed` job filters to backend/migrations/** — or by hand
+# via workflow_dispatch. Migrations are up-only and backward-compatible:
+# single-phase deploy gated on the release window.
+on:
+  repository_dispatch:
+    types: [app-merge]
+  workflow_dispatch:
+    inputs:
+      app_sha:
+        description: >-
+          App-repo commit to build/deploy (defaults to the app repo's current
+          main). Ignored when image_tag is set.
+        required: false
+        default: ""
+      image_tag:
+        description: >-
+          Deploy an already-published migrate image tag instead of building.
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-db
+  cancel-in-progress: false
+
+env:
+  APP_REPO: danielliu30/dating-coach
+  APP_SHA: ${{ github.event.client_payload.sha || inputs.app_sha }}
+  APP_BEFORE: ${{ github.event.client_payload.before }}
+  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME }}
+  DEPLOY_TAG: ${{ inputs.image_tag || github.event.client_payload.sha || inputs.app_sha }}
+
+jobs:
+  # Resolves the app SHA and decides whether this run should proceed: for
+  # dispatch runs only if the merge touched backend/migrations. Fails closed:
+  # when the before-SHA can't be resolved we treat it as changed.
+  changed:
+    if: ${{ !inputs.image_tag }}
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - name: Resolve app SHA
+        id: sha
+        run: |
+          sha="$APP_SHA"
+          if [ -z "$sha" ]; then
+            sha=$(git ls-remote "https://github.com/$APP_REPO" main | cut -f1)
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ steps.sha.outputs.sha }}
+          fetch-depth: 0
+          path: app
+      - name: Check whether backend/migrations changed
+        id: check
+        working-directory: app
+        run: |
+          before="${APP_BEFORE:-}"
+          if [ -z "$before" ] || ! git cat-file -e "$before" 2>/dev/null; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$before" "${{ steps.sha.outputs.sha }}" -- backend/migrations | grep -q .; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  e2e:
+    if: ${{ !inputs.image_tag && needs.changed.outputs.deploy == 'true' }}
+    needs: [changed]
+    uses: ./.github/workflows/gate-e2e.yml
+    with:
+      app_sha: ${{ needs.changed.outputs.sha }}
+
+  build-push:
+    if: ${{ !cancelled() && !inputs.image_tag && needs.changed.outputs.deploy == 'true' }}
+    needs: [changed, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE_TAG: ${{ needs.changed.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ needs.changed.outputs.sha }}
+          path: app
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build + push migrate image (tagged with the app SHA)
+        working-directory: app
+        run: |
+          docker compose build migrate
+          docker compose push migrate
+
+      # `latest` only ever points at the app repo's current tip of main.
+      - name: Push latest tag
+        run: |
+          tip=$(git ls-remote "https://github.com/$APP_REPO" main | cut -f1)
+          if [ "$tip" = "${{ needs.changed.outputs.sha }}" ]; then
+            docker tag "$DOCKERHUB_NAMESPACE/dating-coach-migrate:$DEPLOY_TAG" \
+                       "$DOCKERHUB_NAMESPACE/dating-coach-migrate:latest"
+            docker push "$DOCKERHUB_NAMESPACE/dating-coach-migrate:latest"
+          else
+            echo "app main moved past this SHA: latest left untouched"
+          fi
+
+  deploy-local:
+    needs: [changed, build-push]
+    if: >-
+      ${{ !cancelled() && vars.DEPLOY_TARGET != 'cloud-run'
+      && (inputs.image_tag != '' || (needs.changed.outputs.deploy == 'true' && needs.build-push.result == 'success')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print local deploy commands
+        run: |
+          echo "Cloud deploy disabled (DEPLOY_TARGET is not 'cloud-run')."
+          echo "Image published: docker.io/$DOCKERHUB_NAMESPACE/dating-coach-migrate:$DEPLOY_TAG"
+          echo "Run migrations locally (from an app-repo checkout):"
+          echo "  IMAGE_TAG=$DEPLOY_TAG docker compose pull migrate"
+          echo "  IMAGE_TAG=$DEPLOY_TAG docker compose run --rm migrate"
+
+  deploy:
+    needs: [changed, build-push]
+    if: >-
+      ${{ !cancelled() && vars.DEPLOY_TARGET == 'cloud-run'
+      && (inputs.image_tag != '' || (needs.changed.outputs.deploy == 'true' && needs.build-push.result == 'success')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_APP_URL }}
+    env:
+      PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      RUNTIME_SA: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+      IMAGES: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Restores (image_tag) skip the window: returning to a known schema path
+      # should not wait for a release window.
+      - name: Release window
+        if: ${{ !inputs.image_tag }}
+        env:
+          DEPLOY_WINDOW_DAYS: ${{ vars.DEPLOY_WINDOW_DAYS }}
+          DEPLOY_WINDOW_START_UTC: ${{ vars.DEPLOY_WINDOW_START_UTC }}
+          DEPLOY_WINDOW_END_UTC: ${{ vars.DEPLOY_WINDOW_END_UTC }}
+        run: bash scripts/release-window.sh
+
+      - name: Run migrations (Cloud Run job)
+        run: |
+          gcloud run jobs deploy dating-coach-migrate --project "$PROJECT" --region "$REGION" \
+            --image "$IMAGES/dating-coach-migrate:$DEPLOY_TAG" \
+            --service-account "$RUNTIME_SA" \
+            --set-secrets DATABASE_URL=DATABASE_URL:latest \
+            --max-retries 0 --task-timeout 10m \
+            --execute-now --wait

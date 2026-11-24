@@ -1,0 +1,253 @@
+name: Deploy — web
+
+# UI path of the release pipeline. Static Expo bundle served by Cloud Run;
+# public traffic rolls out through the same wave staircase as the api:
+# alpha tag -> percent waves -> 100%, coverage/latency/fault gated,
+# auto-rollback on breach.
+on:
+  repository_dispatch:
+    types: [app-merge]
+  workflow_dispatch:
+    inputs:
+      app_sha:
+        description: >-
+          App-repo commit to build/deploy (defaults to the app repo's current
+          main). Ignored when image_tag is set.
+        required: false
+        default: ""
+      image_tag:
+        description: >-
+          Deploy an already-published web image tag instead of building.
+          Restores go straight to 100% and skip the release window.
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+env:
+  APP_REPO: danielliu30/dating-coach
+  APP_SHA: ${{ github.event.client_payload.sha || inputs.app_sha }}
+  APP_BEFORE: ${{ github.event.client_payload.before }}
+  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME }}
+  DEPLOY_TAG: ${{ inputs.image_tag || github.event.client_payload.sha || inputs.app_sha }}
+  WEB_API_URL: ${{ vars.API_PUBLIC_URL }}
+  GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+
+jobs:
+  changed:
+    if: ${{ !inputs.image_tag }}
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - name: Resolve app SHA
+        id: sha
+        run: |
+          sha="$APP_SHA"
+          if [ -z "$sha" ]; then
+            sha=$(git ls-remote "https://github.com/$APP_REPO" main | cut -f1)
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ steps.sha.outputs.sha }}
+          fetch-depth: 0
+          path: app
+      - name: Check whether app/ changed
+        id: check
+        working-directory: app
+        run: |
+          before="${APP_BEFORE:-}"
+          if [ -z "$before" ] || ! git cat-file -e "$before" 2>/dev/null; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$before" "${{ steps.sha.outputs.sha }}" -- app | grep -q .; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  e2e:
+    if: ${{ !inputs.image_tag && needs.changed.outputs.deploy == 'true' }}
+    needs: [changed]
+    uses: ./.github/workflows/gate-e2e.yml
+    with:
+      app_sha: ${{ needs.changed.outputs.sha }}
+
+  build-push:
+    if: ${{ !cancelled() && !inputs.image_tag && needs.changed.outputs.deploy == 'true' }}
+    needs: [changed, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      IMAGE_TAG: ${{ needs.changed.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ needs.changed.outputs.sha }}
+          path: app
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build + push web image (tagged with the app SHA)
+        working-directory: app
+        run: |
+          docker compose --profile gateway build web
+          docker compose --profile gateway push web
+
+      - name: Push latest tag
+        run: |
+          tip=$(git ls-remote "https://github.com/$APP_REPO" main | cut -f1)
+          if [ "$tip" = "${{ needs.changed.outputs.sha }}" ]; then
+            docker tag "$DOCKERHUB_NAMESPACE/dating-coach-web:$IMAGE_TAG" \
+                       "$DOCKERHUB_NAMESPACE/dating-coach-web:latest"
+            docker push "$DOCKERHUB_NAMESPACE/dating-coach-web:latest"
+          else
+            echo "app main moved past this SHA: latest left untouched"
+          fi
+
+  deploy-local:
+    needs: [changed, build-push]
+    if: >-
+      ${{ !cancelled() && vars.DEPLOY_TARGET != 'cloud-run'
+      && (inputs.image_tag != '' || (needs.changed.outputs.deploy == 'true' && needs.build-push.result == 'success')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print local deploy commands
+        run: |
+          echo "Cloud deploy disabled (DEPLOY_TARGET is not 'cloud-run')."
+          echo "Image published: docker.io/$DOCKERHUB_NAMESPACE/dating-coach-web:$DEPLOY_TAG"
+          echo "Deploy locally (from an app-repo checkout):"
+          echo "  IMAGE_TAG=$DEPLOY_TAG docker compose --profile gateway pull web"
+          echo "  IMAGE_TAG=$DEPLOY_TAG docker compose --profile gateway up -d web nginx"
+
+  deploy:
+    needs: [changed, build-push]
+    if: >-
+      ${{ !cancelled() && vars.DEPLOY_TARGET == 'cloud-run'
+      && (inputs.image_tag != '' || (needs.changed.outputs.deploy == 'true' && needs.build-push.result == 'success')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_APP_URL }}
+    env:
+      PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      WEB_SA: ${{ vars.GCP_WEB_SERVICE_ACCOUNT }}
+      IMAGES: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+      WAVE_PLAN: ${{ vars.DEPLOY_WAVE_PLAN || '10:15 25:30 50:45 100:0' }}
+      BAKE_MIN_REQUESTS: ${{ vars.BAKE_MIN_REQUESTS || '20' }}
+      BAKE_MAX_ERROR_RATE: ${{ vars.BAKE_MAX_ERROR_RATE || '1' }}
+      BAKE_SLOW_THRESHOLD_MS: ${{ vars.BAKE_SLOW_THRESHOLD_MS || '2000' }}
+      BAKE_MAX_SLOW_RATE: ${{ vars.BAKE_MAX_SLOW_RATE || '5' }}
+      WEB_MIN_INSTANCES: ${{ vars.WEB_MIN_INSTANCES || '0' }}
+      WEB_MAX_INSTANCES: ${{ vars.WEB_MAX_INSTANCES || '2' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Release window (skipped for image_tag restores)
+        if: ${{ !inputs.image_tag }}
+        env:
+          DEPLOY_WINDOW_DAYS: ${{ vars.DEPLOY_WINDOW_DAYS }}
+          DEPLOY_WINDOW_START_UTC: ${{ vars.DEPLOY_WINDOW_START_UTC }}
+          DEPLOY_WINDOW_END_UTC: ${{ vars.DEPLOY_WINDOW_END_UTC }}
+        run: bash scripts/release-window.sh
+
+      - name: Remember the revisions serving now (rollback target)
+        id: previous
+        run: |
+          num="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+          echo "WEB_URL=https://dating-coach-web-$num.$REGION.run.app" >> "$GITHUB_ENV"
+          split="$(gcloud run services describe dating-coach-web --project "$PROJECT" --region "$REGION" \
+            --flatten='status.traffic[]' --filter='status.traffic.percent>0' \
+            --format='csv[no-heading](status.traffic.revisionName,status.traffic.percent)' 2>/dev/null \
+            | sed 's/,/=/g' | paste -sd, - || true)"
+          prev="$(echo "$split" | tr ',' '\n' | sort -t= -k2 -rn | head -1 | cut -d= -f1)"
+          echo "PREV_WEB_SPLIT=$split" >> "$GITHUB_ENV"
+          echo "PREV_WEB_REVISION=$prev" >> "$GITHUB_ENV"
+          echo "previous web traffic: '$split' (primary: $prev)"
+
+      - name: Deploy alpha revision (tagged, no traffic)
+        run: |
+          gcloud run deploy dating-coach-web --project "$PROJECT" --region "$REGION" \
+            --image "$IMAGES/dating-coach-web:$DEPLOY_TAG" --port 80 \
+            --tag wave-candidate \
+            --service-account "$WEB_SA" \
+            --allow-unauthenticated --min-instances "$WEB_MIN_INSTANCES" --max-instances "$WEB_MAX_INSTANCES"
+
+      - name: Alpha smoke (internal traffic only, via the tag URL)
+        run: |
+          rev="$(gcloud run services describe dating-coach-web --project "$PROJECT" --region "$REGION" \
+            --format='value(status.latestReadyRevisionName)')"
+          echo "NEW_WEB_REVISION=$rev" >> "$GITHUB_ENV"
+          tag_url="$(gcloud run services describe dating-coach-web --project "$PROJECT" --region "$REGION" \
+            --flatten='status.traffic[]' --filter='status.traffic.tag=wave-candidate' \
+            --format='value(status.traffic.url)')"
+          echo "alpha revision: $rev at $tag_url"
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null "$tag_url/" && break
+            [ "$i" = 30 ] && { echo "alpha revision never became healthy"; exit 1; }
+            sleep 4
+          done
+          # Synthetic coverage: SPA fallback must keep deep links working.
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$tag_url/verify?token=probe")
+          [ "$code" = 200 ] || { echo "deep-link probe returned $code, want 200"; exit 1; }
+          echo "alpha smoke passed on $rev"
+
+      - name: Restore web traffic (image_tag dispatch)
+        if: ${{ inputs.image_tag != '' }}
+        run: |
+          gcloud run services update-traffic dating-coach-web \
+            --project "$PROJECT" --region "$REGION" --to-latest
+
+      - name: Wave rollout (forward only)
+        if: ${{ !inputs.image_tag }}
+        run: |
+          bash scripts/deploy-waves.sh \
+            --project "$PROJECT" --region "$REGION" \
+            --service dating-coach-web \
+            --new-revision "$NEW_WEB_REVISION" \
+            --prev-revision "$PREV_WEB_REVISION" \
+            --prev-split "$PREV_WEB_SPLIT" \
+            --plan "$WAVE_PLAN" \
+            --min-requests "$BAKE_MIN_REQUESTS" \
+            --max-error-rate "$BAKE_MAX_ERROR_RATE" \
+            --slow-threshold-ms "$BAKE_SLOW_THRESHOLD_MS" \
+            --max-slow-rate "$BAKE_MAX_SLOW_RATE"
+
+      - name: Post-rollout health check
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null "$WEB_URL/" && { echo "web healthy on $DEPLOY_TAG"; exit 0; }
+            sleep 4
+          done
+          echo "web health check failed after rollout"
+          exit 1
+
+      - name: Roll back web traffic
+        if: ${{ failure() && steps.previous.outcome == 'success' }}
+        run: |
+          if [ -n "$PREV_WEB_SPLIT" ]; then
+            echo "reverting dating-coach-web to $PREV_WEB_SPLIT"
+            gcloud run services update-traffic dating-coach-web \
+              --project "$PROJECT" --region "$REGION" --to-revisions "$PREV_WEB_SPLIT"
+          fi

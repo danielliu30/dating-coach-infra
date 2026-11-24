@@ -1,0 +1,97 @@
+name: Gate — app e2e at a given SHA
+
+# Reusable gate: runs the app repo's e2e suite against a specific app SHA.
+# Mirrors dating-coach/.github/workflows/e2e.yml but checks out the app repo
+# into ./app (infra workflows run in the infra repo's context).
+on:
+  workflow_call:
+    inputs:
+      app_sha:
+        required: true
+        type: string
+
+env:
+  APP_REPO: danielliu30/dating-coach
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ inputs.app_sha }}
+          path: app
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The suite runs fully offline with the heuristic scorer; e2e/.env is the
+      # single source of truth so compose never picks up a stray root .env.
+      - name: Use the E2E environment
+        run: cp e2e/.env .env
+
+      - name: Bring up the gateway stack
+        run: docker compose --env-file e2e/.env --profile gateway up -d --build
+
+      - name: Wait for /healthz through nginx
+        run: |
+          for i in $(seq 1 90); do
+            if curl -fsS http://localhost:80/healthz >/dev/null 2>&1 \
+              && curl -fsS http://localhost:80/ml/healthz >/dev/null 2>&1; then
+              echo "stack ready after ${i} attempts"; exit 0
+            fi
+            sleep 2
+          done
+          echo "stack did not become healthy"; docker compose --env-file e2e/.env --profile gateway ps; exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/e2e/package-lock.json
+
+      - name: Install test dependencies
+        working-directory: app/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Typecheck
+        working-directory: app/e2e
+        run: npm run typecheck
+
+      - name: Run Playwright
+        working-directory: app/e2e
+        run: npx playwright test
+
+      - name: Upload Playwright report + traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            app/e2e/playwright-report
+            app/e2e/test-results
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Collect compose logs
+        if: failure()
+        working-directory: app
+        run: docker compose --env-file e2e/.env --profile gateway logs --no-color > compose-logs.txt 2>&1 || true
+
+      - name: Upload compose logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: app/compose-logs.txt
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose --env-file e2e/.env --profile gateway down -v
