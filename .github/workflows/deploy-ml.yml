@@ -76,7 +76,7 @@ jobs:
       app_sha: ${{ needs.changed.outputs.sha }}
 
   build-push:
-    if: ${{ !cancelled() && !inputs.image_tag && needs.changed.outputs.deploy == 'true' }}
+    if: ${{ !cancelled() && !inputs.image_tag && needs.changed.outputs.deploy == 'true' && vars.DEPLOY_TARGET == 'cloud-run' }}
     needs: [changed, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 45
