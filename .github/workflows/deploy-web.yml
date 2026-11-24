@@ -202,6 +202,7 @@ jobs:
           tag_url="$(gcloud run services describe dating-coach-web --project "$PROJECT" --region "$REGION" \
             --flatten='status.traffic[]' --filter='status.traffic.tag=wave-candidate' \
             --format='value(status.traffic.url)')"
+          echo "WEB_TAG_URL=$tag_url" >> "$GITHUB_ENV"
           echo "alpha revision: $rev at $tag_url"
           for i in $(seq 1 30); do
             curl -fsS -o /dev/null "$tag_url/" && break
@@ -228,6 +229,8 @@ jobs:
             --new-revision "$NEW_WEB_REVISION" \
             --prev-revision "$PREV_WEB_REVISION" \
             --prev-split "$PREV_WEB_SPLIT" \
+            --tag-url "$WEB_TAG_URL" \
+            --probe-config scripts/probe-suite.web.conf \
             --plan "$WAVE_PLAN" \
             --min-requests "$BAKE_MIN_REQUESTS" \
             --max-error-rate "$BAKE_MAX_ERROR_RATE" \

@@ -314,6 +314,7 @@ jobs:
           tag_url="$(gcloud run services describe dating-coach-api --project "$PROJECT" --region "$REGION" \
             --flatten='status.traffic[]' --filter='status.traffic.tag=wave-candidate' \
             --format='value(status.traffic.url)')"
+          echo "API_TAG_URL=$tag_url" >> "$GITHUB_ENV"
           echo "alpha revision: $rev at $tag_url"
           for i in $(seq 1 30); do
             curl -fsS "$tag_url/healthz" >/dev/null 2>&1 && break
@@ -344,6 +345,8 @@ jobs:
             --new-revision "$NEW_API_REVISION" \
             --prev-revision "$PREV_API_REVISION" \
             --prev-split "$PREV_API_SPLIT" \
+            --tag-url "$API_TAG_URL" \
+            --probe-config scripts/probe-suite.api.conf \
             --plan "$WAVE_PLAN" \
             --min-requests "$BAKE_MIN_REQUESTS" \
             --max-error-rate "$BAKE_MAX_ERROR_RATE" \

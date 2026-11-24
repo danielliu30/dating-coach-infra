@@ -14,4 +14,5 @@ jobs:
       - run: bash -n scripts/*.sh
       - run: bash scripts/test-release-window.sh
       - run: bash scripts/test-deploy-bake-check.sh
+      - run: bash scripts/test-deploy-probe-suite.sh
       - run: bash scripts/test-deploy-waves.sh

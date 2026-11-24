@@ -39,11 +39,19 @@ Each pipeline only owns its piece:
 1. The new revision deploys tagged `wave-candidate` with **no traffic** — an
    alpha smoke hits the tag URL directly (synthetic coverage, since real
    traffic hasn't arrived).
-2. Each wave shifts `N%` of traffic, bakes, then `deploy-bake-check.sh` reads
-   the revision's request logs and requires: **coverage** (`>= BAKE_MIN_REQUESTS`
-   — a quiet wave proves nothing), **5xx rate** under `BAKE_MAX_ERROR_RATE`%,
-   **slow-request ratio** (over `BAKE_SLOW_THRESHOLD_MS`) under
-   `BAKE_MAX_SLOW_RATE`%.
+2. Each wave shifts `N%` of traffic, then verifies on two axes before
+   promoting:
+   - **Active probes** — `deploy-probe-suite.sh` runs the per-service contract
+     suite (`probe-suite.{api,web}.conf`) against the candidate's tag URL
+     before and after the bake: real requests exercising the paths that
+     matter, on every wave. They also feed coverage. A semantic break fails
+     fast instead of baking quietly.
+   - **Traffic metrics** — `deploy-bake-check.sh` reads the revision's request
+     logs and requires: **coverage** (`>= BAKE_MIN_REQUESTS` — a quiet wave
+     proves nothing), **5xx rate** under `BAKE_MAX_ERROR_RATE`%, **slow-request
+     ratio** under `BAKE_MAX_SLOW_RATE`%, and a **service-wide 5xx ceiling**
+     across all revisions — a bad canary can hurt customers it doesn't even
+     serve.
 3. Any breach reverts traffic to the revisions serving before the deploy. A
    passing 100 wave is the only path to full traffic.
 

@@ -10,8 +10,13 @@ publishing, GCP provisioning and every change to live traffic.
   `DEPLOY_WAVE_PLAN` staircase (alpha tag -> percent waves -> 100%). No step
   skips ahead, no ad-hoc `update-traffic` in workflow code outside
   deploy-waves.sh and the rollback path.
-- **Auto-rollback, never wait.** A failed bake gate or post-rollout health
-  check reverts traffic to the previous revisions and fails the run.
+- **Every wave is verified twice.** The probe suite (active contract checks
+  on the candidate's tag URL) and the bake check (coverage + 5xx + slow
+  ratio on the revision, 5xx ceiling service-wide) both gate each promotion.
+  Re-running CI unit tests at a wave tests nothing new — live verification
+  is what catches real breakage.
+- **Auto-rollback, never wait.** A failed probe, bake gate or post-rollout
+  health check reverts traffic to the previous revisions and fails the run.
 - **Migrations up-only.** Every migration must be backward-compatible; the
   migrate job never rolls schema back.
 - **Gates fail closed.** Unresolvable before-SHA => treat as changed and

@@ -11,17 +11,24 @@
 #                   [--plan "10:15 25:30 50:45 100:0"] # percent:bake-minutes pairs
 #                   [--min-requests N] [--max-error-rate PCT]
 #                   [--slow-threshold-ms MS] [--max-slow-rate PCT]
+#                   [--tag-url URL --probe-config FILE]
 #
-# Injectable for tests: GCLOUD, SLEEP, BAKE_CHECK, LOG_LOCATION.
+# With --tag-url, every wave also runs deploy-probe-suite.sh against the
+# candidate revision's tag URL before and after the bake — active
+# verification on top of the passive traffic metrics.
+#
+# Injectable for tests: GCLOUD, SLEEP, BAKE_CHECK, PROBE_SUITE, LOG_LOCATION.
 set -u
 
 PROJECT="" REGION="" SERVICE="" NEW_REV="" PREV_REV="" PREV_SPLIT=""
 PLAN="10:15 25:30 50:45 100:0"
 MIN_REQUESTS=20 MAX_ERROR_RATE=1 SLOW_MS=2000 MAX_SLOW_RATE=5
+TAG_URL="" PROBE_CONFIG=""
 
 GCLOUD=${GCLOUD:-gcloud}
 SLEEP=${SLEEP:-sleep}
 BAKE_CHECK=${BAKE_CHECK:-"$(cd "$(dirname "$0")" && pwd)/deploy-bake-check.sh"}
+PROBE_SUITE=${PROBE_SUITE:-"$(cd "$(dirname "$0")" && pwd)/deploy-probe-suite.sh"}
 LOG_LOCATION=${LOG_LOCATION:-global}
 
 while [ $# -gt 0 ]; do
@@ -37,6 +44,8 @@ while [ $# -gt 0 ]; do
     --max-error-rate) MAX_ERROR_RATE=$2 ;;
     --slow-threshold-ms) SLOW_MS=$2 ;;
     --max-slow-rate) MAX_SLOW_RATE=$2 ;;
+    --tag-url) TAG_URL=$2 ;;
+    --probe-config) PROBE_CONFIG=$2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift 2
@@ -66,9 +75,26 @@ for step in $PLAN; do
       --to-revisions "$NEW_REV=$pct,$PREV_REV=$((100-pct))" || rollback
   fi
 
+  # Active verification: probes hit the candidate's tag URL directly, so a
+  # semantically broken canary fails fast instead of baking quietly. They
+  # also land in the revision's request logs — synthetic coverage.
+  if [ -n "$TAG_URL" ]; then
+    "$PROBE_SUITE" --base-url "$TAG_URL" --config "$PROBE_CONFIG" || {
+      echo "   wave ${pct}% probe suite FAILED"
+      rollback
+    }
+  fi
+
   [ "$bake" -gt 0 ] || continue
   echo "   baking ${bake}m"
   "$SLEEP" "$((bake*60))"
+
+  if [ -n "$TAG_URL" ]; then
+    "$PROBE_SUITE" --base-url "$TAG_URL" --config "$PROBE_CONFIG" || {
+      echo "   wave ${pct}% post-bake probe suite FAILED"
+      rollback
+    }
+  fi
   if "$BAKE_CHECK" --project "$PROJECT" --location "$LOG_LOCATION" \
         --service "$SERVICE" --revision "$NEW_REV" \
         --window-minutes "$bake" --min-requests "$MIN_REQUESTS" \

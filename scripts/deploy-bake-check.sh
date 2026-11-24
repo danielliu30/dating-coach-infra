@@ -16,13 +16,17 @@
 #           --slow-threshold-ms  latency ceiling per req   (default 2000)
 #           --max-slow-rate    slow-request percent ceiling(default 5)
 #           --limit            max log entries to pull     (default 10000)
+#           --service-wide-max-error-rate  service-wide (all revisions) 5xx
+#                            percent ceiling — catches a canary degrading
+#                            customers it doesn't even serve (default 2)
 #           --lines-file F     read "status latency_s" lines from F instead of
 #                            calling gcloud (offline tests)
+#           --service-lines-file F  service-wide fixture for offline tests
 set -u
 
 PROJECT="" SERVICE="" REVISION="" LOCATION=global
 WINDOW_MIN=15 MIN_REQUESTS=20 MAX_ERROR_RATE=1 SLOW_MS=2000 MAX_SLOW_RATE=5
-LIMIT=10000 LINES_FILE=""
+LIMIT=10000 LINES_FILE="" SERVICE_WIDE_MAX_ERROR_RATE=2 SERVICE_LINES_FILE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,7 +40,9 @@ while [ $# -gt 0 ]; do
     --slow-threshold-ms) SLOW_MS=$2 ;;
     --max-slow-rate) MAX_SLOW_RATE=$2 ;;
     --limit) LIMIT=$2 ;;
+    --service-wide-max-error-rate) SERVICE_WIDE_MAX_ERROR_RATE=$2 ;;
     --lines-file) LINES_FILE=$2 ;;
+    --service-lines-file) SERVICE_LINES_FILE=$2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift 2
@@ -52,6 +58,20 @@ collect() {
     --freshness "${WINDOW_MIN}m" --limit "$LIMIT" \
     --format='value(httpRequest.status,httpRequest.latency)' \
   | awk 'NF==0{next} {s=$1; l=$2; sub(/s$/,"",l); if (l !~ /^[0-9.]+$/) l=0; print s, l}'
+}
+
+# All revisions of the service: a bad canary can degrade customers it does
+# not even serve (locks, shared resources), so service-wide health gates too.
+collect_service() {
+  if [ -n "$SERVICE_LINES_FILE" ]; then cat "$SERVICE_LINES_FILE"; return; fi
+  # Fixture mode without a service fixture: nothing to check, skip.
+  [ -n "$LINES_FILE" ] && return
+  gcloud logging read \
+    "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND httpRequest.status>=0" \
+    --project "$PROJECT" --location "$LOCATION" \
+    --freshness "${WINDOW_MIN}m" --limit "$LIMIT" \
+    --format='value(httpRequest.status)' \
+  | awk 'NF==0{next} {print $1, 0}'
 }
 
 slow_s=$(awk "BEGIN{print $SLOW_MS/1000}")
@@ -76,6 +96,22 @@ err_rate=$(pct "$faults" "$total")
 if awk "BEGIN{exit !($err_rate > $MAX_ERROR_RATE)}"; then
   echo "FAULTS: 5xx rate ${err_rate}% > ${MAX_ERROR_RATE}% ceiling"
   exit 1
+fi
+
+read -r svc_total svc_faults _ <<EOF
+$(collect_service | awk '{ n++; if ($1+0 >= 500) e++ } END { print n+0, e+0, 0 }')
+EOF
+svc_total=${svc_total:-0} svc_faults=${svc_faults:-0}
+if [ "$svc_total" -ge "$MIN_REQUESTS" ]; then
+  svc_rate=$(pct "$svc_faults" "$svc_total")
+  if awk "BEGIN{exit !($svc_rate > $SERVICE_WIDE_MAX_ERROR_RATE)}"; then
+    echo "SERVICE-WIDE FAULTS: ${svc_rate}% 5xx across all revisions ($svc_faults/$svc_total)"
+    echo "> ${SERVICE_WIDE_MAX_ERROR_RATE}% ceiling — the wave is hurting traffic beyond the canary"
+    exit 1
+  fi
+  echo "service-wide 5xx ${svc_rate}% ($svc_faults/$svc_total) within ceiling"
+else
+  echo "service-wide check skipped: only $svc_total requests total"
 fi
 slow_rate=$(pct "$slow" "$total")
 if awk "BEGIN{exit !($slow_rate > $MAX_SLOW_RATE)}"; then

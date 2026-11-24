@@ -50,6 +50,16 @@ printf '200\n200 abc\n200 None\n' >"$FIX/bad.log"
 for _ in $(seq 1 18); do echo '200 0.05' >>"$FIX/bad.log"; done
 t 'bad latency lines tolerated'  0 C "$FIX/bad.log" --min-requests 20
 
+# service-wide regression gate (--service-lines-file fixtures all revisions)
+REV_OK=$(lines rev.log 200 0.05 25)
+SVC_BAD=$(mix svc1.log 200:0.05:97 500:0.05:3)   # 3% > 2% ceiling
+SVC_OK=$(lines svc2.log 200 0.05 60)
+SVC_QUIET=$(lines svc3.log 200 0.05 5)
+t 'service-wide 5xx refused'     1 bash "$CHK" --lines-file "$REV_OK" --service-lines-file "$SVC_BAD" --min-requests 20
+t 'service-wide ok passes'       0 bash "$CHK" --lines-file "$REV_OK" --service-lines-file "$SVC_OK" --min-requests 20
+t 'service-wide quiet skipped'   0 bash "$CHK" --lines-file "$REV_OK" --service-lines-file "$SVC_QUIET" --min-requests 20
+t 'fixture w/o svc skips check'  0 C "$REV_OK" --min-requests 20
+
 # args required without --lines-file
 t 'no args errors'               2 bash "$CHK"
 
