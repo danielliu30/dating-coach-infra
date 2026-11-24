@@ -12,10 +12,16 @@
 #                   [--min-requests N] [--max-error-rate PCT]
 #                   [--slow-threshold-ms MS] [--max-slow-rate PCT]
 #                   [--tag-url URL --probe-config FILE]
+#                   [--watch-minutes N] # post-100% watch; default 0 (off)
 #
 # With --tag-url, every wave also runs deploy-probe-suite.sh against the
 # candidate revision's tag URL before and after the bake — active
 # verification on top of the passive traffic metrics.
+#
+# With --watch-minutes N > 0, the rollout doesn't end at promotion: it holds
+# at 100% for N minutes, then re-runs the bake gate — at full traffic the
+# revision's stats are the service-wide stats. A breach rolls back to
+# PREV_SPLIT, catching slow-burn regressions the wave bakes missed.
 #
 # Injectable for tests: GCLOUD, SLEEP, BAKE_CHECK, PROBE_SUITE, LOG_LOCATION.
 # Bake-gate knobs, env-overridable: WAVE_WARMUP_SECONDS (grace for Cloud
@@ -27,7 +33,7 @@ set -u
 PROJECT="" REGION="" SERVICE="" NEW_REV="" PREV_REV="" PREV_SPLIT=""
 PLAN="10:15 25:30 50:45 100:0"
 MIN_REQUESTS=20 MAX_ERROR_RATE=1 SLOW_MS=2000 MAX_SLOW_RATE=5
-TAG_URL="" PROBE_CONFIG=""
+TAG_URL="" PROBE_CONFIG="" WATCH_MINUTES=0
 
 GCLOUD=${GCLOUD:-gcloud}
 SLEEP=${SLEEP:-sleep}
@@ -53,6 +59,7 @@ while [ $# -gt 0 ]; do
     --max-slow-rate) MAX_SLOW_RATE=$2 ;;
     --tag-url) TAG_URL=$2 ;;
     --probe-config) PROBE_CONFIG=$2 ;;
+    --watch-minutes) WATCH_MINUTES=$2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift 2
@@ -115,5 +122,23 @@ for step in $PLAN; do
     rollback
   fi
 done
+
+# Post-promotion watch: the staircase's 100 wave has no bake, so a slow-burn
+# regression under full traffic would go unnoticed. Hold at 100% and re-run
+# the gate — the revision's stats are now the service-wide stats.
+if [ "$WATCH_MINUTES" -gt 0 ]; then
+  echo "== post-promotion watch: holding ${WATCH_MINUTES}m at 100%"
+  "$SLEEP" "$((WATCH_MINUTES*60))"
+  if "$BAKE_CHECK" --project "$PROJECT" --location "$LOG_LOCATION" \
+        --service "$SERVICE" --revision "$NEW_REV" \
+        --window-minutes "$WATCH_MINUTES" --min-requests "$MIN_REQUESTS" \
+        --max-error-rate "$MAX_ERROR_RATE" \
+        --slow-threshold-ms "$SLOW_MS" --max-slow-rate "$MAX_SLOW_RATE"; then
+    echo "   watch passed: ${WATCH_MINUTES}m at 100% within thresholds"
+  else
+    echo "   post-promotion watch FAILED"
+    rollback
+  fi
+fi
 
 echo "rollout complete: $SERVICE on $NEW_REV"
