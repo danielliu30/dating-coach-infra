@@ -33,7 +33,7 @@ env:
   APP_REPO: danielliu30/dating-coach
   APP_SHA: ${{ github.event.client_payload.sha || inputs.app_sha }}
   APP_BEFORE: ${{ github.event.client_payload.before }}
-  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
   DEPLOY_TAG: ${{ inputs.image_tag || github.event.client_payload.sha || inputs.app_sha }}
 
 jobs:
@@ -161,7 +161,7 @@ jobs:
       REGION: ${{ vars.GCP_REGION || 'us-central1' }}
       RUNTIME_SA: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
       INVOKER_SA: ${{ vars.GCP_INVOKER_SERVICE_ACCOUNT }}
-      IMAGES: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+      IMAGES: docker.io/${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
       PUBLIC_APP_URL: ${{ vars.PUBLIC_APP_URL }}
       ANALYSIS_TOPIC: conversation.analysis
       DELETION_TOPIC: account.deletion

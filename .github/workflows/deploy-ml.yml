@@ -29,7 +29,7 @@ env:
   APP_REPO: danielliu30/dating-coach
   APP_SHA: ${{ github.event.client_payload.sha || inputs.app_sha }}
   APP_BEFORE: ${{ github.event.client_payload.before }}
-  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
   DEPLOY_TAG: ${{ inputs.image_tag || github.event.client_payload.sha || inputs.app_sha }}
 
 jobs:
@@ -143,7 +143,7 @@ jobs:
       PROJECT: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION || 'us-central1' }}
       RUNTIME_SA: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
-      IMAGES: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+      IMAGES: docker.io/${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
       ML_MAX_INSTANCES: ${{ vars.ML_MAX_INSTANCES || '2' }}
     steps:
       - uses: actions/checkout@v4
