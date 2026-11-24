@@ -76,7 +76,8 @@ It enables the APIs, creates the `dc-runtime`, `dc-web`, `dc-invoker` and `dc-de
 service accounts, GitHub OIDC trust for this repo (no JSON keys), the five
 Secret Manager secrets and the Pub/Sub topics, then prints the GitHub variables
 to set. Re-running it is safe and updates the existing WIF provider's trust
-condition. Only the per-service `deploy-{db,backend,ml,web}.yml` pipelines on
+condition. Only the per-service `deploy-{db,backend,ml,web}.yml` pipelines and
+the hourly `reconcile.yml` drift check on
 `refs/heads/main`, in the
 `production` GitHub environment, can impersonate `dc-deploy`. Branch and pull
 request workflows cannot obtain deployment credentials. Protect `main` and

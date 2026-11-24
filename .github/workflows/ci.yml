@@ -17,4 +17,5 @@ jobs:
       - run: bash scripts/test-deploy-probe-suite.sh
       - run: bash scripts/test-deploy-waves.sh
       - run: bash scripts/test-check-e2e-drift.sh
+      - run: bash scripts/test-reconcile-drift.sh
       - run: bash scripts/test-monitoring-alerts.sh
