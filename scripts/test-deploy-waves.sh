@@ -18,6 +18,11 @@ cat > "$FIX/true" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+cat > "$FIX/sleep" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FIXTURE_DIR/sleep-calls"
+exit 0
+EOF
 cat > "$FIX/probe" <<'EOF'
 #!/usr/bin/env bash
 echo "probe $*" >> "$FIXTURE_DIR/probe-calls"
@@ -35,14 +40,14 @@ eval "echo \$((n+1))" >/dev/null
 res=$(eval "echo \${$((n+1)):-0}")
 exit "$res"
 EOF
-chmod +x "$FIX/gcloud" "$FIX/true" "$FIX/bake-check" "$FIX/probe"
+chmod +x "$FIX/gcloud" "$FIX/true" "$FIX/bake-check" "$FIX/probe" "$FIX/sleep"
 
 pass=0; fail=0
 export FIXTURE_DIR="$FIX"
 run() { # run <name> <want-exit> <bake_results> [extra args...]
   local name=$1 want=$2 results=$3; shift 3
-  rm -f "$FIX/gcloud-calls" "$FIX/bake-calls" "$FIX/gcloud-fail" "$FIX/probe-calls" "$FIX/probe-fail"
-  GCLOUD="$FIX/gcloud" SLEEP="$FIX/true" BAKE_CHECK="$FIX/bake-check" \
+  rm -f "$FIX/gcloud-calls" "$FIX/bake-calls" "$FIX/gcloud-fail" "$FIX/probe-calls" "$FIX/probe-fail" "$FIX/sleep-calls"
+  GCLOUD="$FIX/gcloud" SLEEP="$FIX/sleep" BAKE_CHECK="$FIX/bake-check" \
     PROBE_SUITE="$FIX/probe" BAKE_RESULTS="$results" \
     bash "$WAVES" --project p --region r --service svc \
       --new-revision svc-0002 --prev-revision svc-0001 "$@" >/dev/null 2>&1
@@ -109,6 +114,31 @@ grep -q -- '--to-revisions svc-0001=100' "$FIX/gcloud-calls" \
 grep -q -- '--to-latest' "$FIX/gcloud-calls" \
   && { fail=$((fail+1)); echo 'FAIL  reached 100 despite probe fail'; } \
   || { pass=$((pass+1)); echo 'ok    stopped before 100 on probe fail'; }
+
+# post-promotion watch: after the 100 wave, hold then re-run the bake gate
+run 'watch passes after 100'       0 "0 0" --plan "10:1 100:0" --watch-minutes 5
+n=$(cat "$FIX/bake-calls")
+[ "$n" = 2 ] && { pass=$((pass+1)); echo 'ok    watch ran extra bake check'; } \
+             || { fail=$((fail+1)); echo "FAIL  watch ran extra bake check (got $n)"; }
+expect 'watch reached 100 first'   1 '--to-latest'
+expect 'watch pass no rollback'    0 'svc-0001=100'
+grep -qx '300' "$FIX/sleep-calls" \
+  && { pass=$((pass+1)); echo 'ok    watch held 5m'; } \
+  || { fail=$((fail+1)); echo 'FAIL  watch held 5m'; }
+
+# watch failure rolls back to the previous split even though 100 was reached
+run 'watch fail rolls back'        1 "0 1" --plan "10:1 100:0" --watch-minutes 5
+expect 'watch fail restored split' 1 'update-traffic svc .*--to-revisions svc-0001=100'
+expect 'watch fail reached 100'    1 '--to-latest'
+
+# watch off by default: no extra bake check after the staircase
+run 'watch off by default'         0 "0" --plan "10:1 100:0"
+n=$(cat "$FIX/bake-calls")
+[ "$n" = 1 ] && { pass=$((pass+1)); echo 'ok    no watch bake check by default'; } \
+             || { fail=$((fail+1)); echo "FAIL  no watch bake check by default (got $n)"; }
+[ "$(wc -l < "$FIX/sleep-calls")" = 1 ] \
+  && { pass=$((pass+1)); echo 'ok    no watch hold by default'; } \
+  || { fail=$((fail+1)); echo 'FAIL  no watch hold by default'; }
 
 # missing required args
 GCLOUD="$FIX/gcloud" bash "$WAVES" --project p --region r >/dev/null 2>&1
