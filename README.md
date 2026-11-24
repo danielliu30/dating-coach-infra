@@ -54,6 +54,9 @@ Each pipeline only owns its piece:
      serve.
 3. Any breach reverts traffic to the revisions serving before the deploy. A
    passing 100 wave is the only path to full traffic.
+4. `BAKE_WATCH_MINUTES` (default 15) then holds a post-promotion watch at 100%
+   and re-runs the bake gate — slow-burn regressions under full traffic still
+   roll back.
 
 `scripts/release-window.sh` gates deploys to `DEPLOY_WINDOW_DAYS` +
 `DEPLOY_WINDOW_START_UTC`/`_END_UTC` (UTC). Restores (`image_tag` dispatch)
