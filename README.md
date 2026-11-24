@@ -16,6 +16,8 @@ infra repo: all four deploy-*.yml wake on repository_dispatch(app-merge)
   -> changed job: git diff before..sha on the app checkout -> skip if the
      service's paths were untouched
   -> e2e gate: gate-e2e.yml runs the app repo's e2e suite at that SHA
+     (gate-drift.yml runs scripts/check-e2e-drift.sh daily and alerts when
+     the app's e2e.yml and this mirror diverge)
   -> build-push: checkout app @ sha, docker compose build/push :<sha> (+ :latest
      only when the SHA is still the app repo's main tip)
   -> deploy (DEPLOY_TARGET=cloud-run):
@@ -51,9 +53,15 @@ Each pipeline only owns its piece:
      proves nothing), **5xx rate** under `BAKE_MAX_ERROR_RATE`%, **slow-request
      ratio** under `BAKE_MAX_SLOW_RATE`%, and a **service-wide 5xx ceiling**
      across all revisions — a bad canary can hurt customers it doesn't even
-     serve.
+     serve. Cloud Logging ingestion lags a fresh revision, so the gate first
+     warms up (`WAVE_WARMUP_SECONDS`, default 60s) and repolls no-data reads
+     (`WAVE_RETRIES` x `WAVE_RETRY_DELAY`, default 3 x 60s); only missing
+     coverage retries — a fault or latency breach is evidence and fails fast.
 3. Any breach reverts traffic to the revisions serving before the deploy. A
    passing 100 wave is the only path to full traffic.
+4. `BAKE_WATCH_MINUTES` (default 15) then holds a post-promotion watch at 100%
+   and re-runs the bake gate — slow-burn regressions under full traffic still
+   roll back.
 
 `scripts/release-window.sh` gates deploys to `DEPLOY_WINDOW_DAYS` +
 `DEPLOY_WINDOW_START_UTC`/`_END_UTC` (UTC). Restores (`image_tag` dispatch)
@@ -110,7 +118,7 @@ new revisions on the same image.
 | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | secret | image push |
 | `DEPLOY_TARGET` | variable | `cloud-run` enables real deploys; unset = print local commands |
 | `DEPLOY_WINDOW_DAYS`, `DEPLOY_WINDOW_START_UTC`, `DEPLOY_WINDOW_END_UTC` | variable | release window (UTC); empty = always open |
-| `DEPLOY_WAVE_PLAN`, `BAKE_*` | variable | wave staircase and bake thresholds |
+| `DEPLOY_WAVE_PLAN`, `BAKE_*`, `WAVE_*` | variable | wave staircase, bake thresholds, log-ingestion warmup/retry knobs |
 | `GCP_*` | variable | project, region, service accounts, WIF provider (from gcp-bootstrap.sh) |
 | `API_PUBLIC_URL`, `PUBLIC_APP_URL`, `GOOGLE_CLIENT_ID`, `SMTP_*`, `MAIL_FROM`, `LLM_*`, `*_INSTANCES` | variable | runtime settings baked into services |
 | `production` | environment | required by the WIF trust condition — restrict to main |
@@ -121,6 +129,7 @@ new revisions on the same image.
 bash scripts/test-release-window.sh
 bash scripts/test-deploy-bake-check.sh
 bash scripts/test-deploy-waves.sh   # gcloud/sleep/check are stubbed
+bash scripts/test-check-e2e-drift.sh   # fixture yaml pairs, no fetch
 ```
 
 Runs in CI (`ci.yml`) on every PR.

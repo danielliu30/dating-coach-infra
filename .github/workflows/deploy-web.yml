@@ -156,6 +156,7 @@ jobs:
       BAKE_MAX_ERROR_RATE: ${{ vars.BAKE_MAX_ERROR_RATE || '1' }}
       BAKE_SLOW_THRESHOLD_MS: ${{ vars.BAKE_SLOW_THRESHOLD_MS || '2000' }}
       BAKE_MAX_SLOW_RATE: ${{ vars.BAKE_MAX_SLOW_RATE || '5' }}
+      BAKE_WATCH_MINUTES: ${{ vars.BAKE_WATCH_MINUTES || '15' }}
       WEB_MIN_INSTANCES: ${{ vars.WEB_MIN_INSTANCES || '0' }}
       WEB_MAX_INSTANCES: ${{ vars.WEB_MAX_INSTANCES || '2' }}
     steps:
@@ -239,7 +240,8 @@ jobs:
             --min-requests "$BAKE_MIN_REQUESTS" \
             --max-error-rate "$BAKE_MAX_ERROR_RATE" \
             --slow-threshold-ms "$BAKE_SLOW_THRESHOLD_MS" \
-            --max-slow-rate "$BAKE_MAX_SLOW_RATE"
+            --max-slow-rate "$BAKE_MAX_SLOW_RATE" \
+            --watch-minutes "$BAKE_WATCH_MINUTES"
 
       - name: Post-rollout health check
         run: |
